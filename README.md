@@ -11,7 +11,7 @@ A full-stack data platform for collecting, storing, exploring, and analyzing fin
 ## Features
 
 ### UC1: Data Ingest from Financial Data Providers
-Import time series data from external providers (Nasdaq, Bloomberg, Yahoo Finance) with automatic data provenance tracking.
+Import time series data from external providers (Yahoo Finance, Nasdaq, Bloomberg) with automatic data provenance tracking. Live quotes are fetched via the Yahoo Finance v8 chart API (no API key required).
 
 ### UC2: RESTful API for Data Consumption
 - `GET /api/instruments` - List all financial instruments (Q1)
@@ -134,14 +134,14 @@ Open http://localhost:5173 in your browser.
 ## Sample Data
 
 The seed script populates:
-- **100 financial instruments** across stocks, bonds, crypto, ETFs, commodities, European and Asian equities
-- **5 data sources** (Nasdaq, Bloomberg, Yahoo Finance, Yahoo Finance live, Stooq)
-- **~100 000 time-series records** — 2 years of GBM-simulated OHLCV data per instrument
-- 4 portfolio owners, 4 portfolios, 25 portfolio assets
+- **107 financial instruments** across stocks, bonds, crypto, ETFs, commodities, European and Asian equities
+- **5 data sources** (Nasdaq, Bloomberg, Yahoo Finance, Yahoo Finance Live, Yahoo Finance Historical)
+- **~107 000 time-series records** — 2 years of GBM-simulated OHLCV data per instrument
+- **9 portfolio owners** (5 individuals + 4 institutions), **19 portfolios**, ~170 portfolio assets
 
 ### Fetching Real Historical Data (Optional)
 
-After seeding, you can enrich the database with real OHLCV data from [Stooq](https://stooq.com) (free, no API key):
+After seeding, you can enrich the database with real OHLCV data from [Yahoo Finance](https://finance.yahoo.com) (free, no API key):
 
 ```bash
 # Fetch all instruments
@@ -169,5 +169,4 @@ node src/scripts/fetchRealData.js --dry-run
 | `ANTHROPIC_API_KEY` | | Anthropic API key for Claude AI assistant; falls back to rule-based mode if unset |
 | `MARKET_DATA_REFRESH_INTERVAL_MINUTES` | `15` | Minutes between scheduled market-data refresh runs; disable by setting to `0` |
 | `MARKET_DATA_REFRESH_LIMIT` | `5` | Max instruments to refresh each scheduled run |
-| `ANTHROPIC_API_KEY` | | Anthropic API key for Claude AI assistant; falls back to rule-based mode if unset |
 | `VITE_API_URL` | `http://localhost:5000/api` | Frontend API base URL |
