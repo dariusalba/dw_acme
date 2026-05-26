@@ -1,3 +1,4 @@
+const { v4: uuidv4 } = require('uuid');
 const { TimeSeriesRecord, DataSource } = require('../models');
 
 function normalizeTimeSeriesRecords(records) {
@@ -78,11 +79,21 @@ async function ingestTimeSeries(req, res) {
       volume: r.volume
     }));
 
-    const result = await TimeSeriesRecord.insertMany(docs);
+    // Deduplicate: upsert on (instrumentId, dataSourceId, date) — skip existing records
+    const ops = docs.map(doc => ({
+      updateOne: {
+        filter: { instrumentId: doc.instrumentId, dataSourceId: doc.dataSourceId, date: doc.date },
+        update: { $setOnInsert: { _id: uuidv4(), ...doc } },
+        upsert: true
+      }
+    }));
+    const writeResult = await TimeSeriesRecord.bulkWrite(ops, { ordered: false });
+    const inserted = writeResult.upsertedCount;
+    const skipped  = docs.length - inserted;
 
     await DataSource.findByIdAndUpdate(dataSourceId, { lastSyncedAt: new Date() });
 
-    res.status(201).json({ inserted: result.length });
+    res.status(201).json({ inserted, skipped });
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

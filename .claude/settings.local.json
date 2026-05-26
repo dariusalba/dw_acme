@@ -5,7 +5,8 @@
       "Bash(npm install *)",
       "PowerShell(Get-Command node, npm -ErrorAction SilentlyContinue)",
       "PowerShell(Get-ChildItem \"C:\\\\Program Files\\\\\" | Where-Object { $_.Name -match \"node\" })",
-      "PowerShell($nvm = Get-ChildItem \"$env:APPDATA\\\\nvm\" -ErrorAction SilentlyContinue | Select-Object -First 1; $nvm; Get-ChildItem \"C:\\\\nvm\" -ErrorAction SilentlyContinue | Select-Object -First 3)"
+      "PowerShell($nvm = Get-ChildItem \"$env:APPDATA\\\\nvm\" -ErrorAction SilentlyContinue | Select-Object -First 1; $nvm; Get-ChildItem \"C:\\\\nvm\" -ErrorAction SilentlyContinue | Select-Object -First 3)",
+      "PowerShell($drives = @\\('C:', 'D:'\\); foreach \\($d in $drives\\) { Get-ChildItem \"$d\\\\\" -Filter \"node.exe\" -Recurse -Depth 5 -ErrorAction SilentlyContinue | Select-Object FullName | Select-Object -First 3 })"
     ]
   }
 }

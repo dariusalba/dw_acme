@@ -8,6 +8,7 @@ const navItems = [
   { to: '/analytics',    label: 'Analytics' },
   { to: '/market-data',  label: 'Market Data' },
   { to: '/ingest',       label: 'Data Ingest' },
+  { to: '/spark',        label: 'Spark Analytics' },
   { to: '/assistant',    label: 'AI Assistant' },
 ];
 

@@ -10,6 +10,7 @@ import Analytics from './pages/Analytics';
 import DataIngest from './pages/DataIngest';
 import Assistant from './pages/Assistant';
 import MarketData from './pages/MarketData';
+import SparkAnalytics from './pages/SparkAnalytics';
 
 export default function App() {
   return (
@@ -24,6 +25,7 @@ export default function App() {
         <Route path="analytics" element={<Analytics />} />
         <Route path="market-data" element={<MarketData />} />
         <Route path="ingest" element={<DataIngest />} />
+        <Route path="spark"     element={<SparkAnalytics />} />
         <Route path="assistant" element={<Assistant />} />
       </Route>
     </Routes>

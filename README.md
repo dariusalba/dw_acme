@@ -7,6 +7,8 @@ A full-stack data platform for collecting, storing, exploring, and analyzing fin
 - **Frontend**: React + Vite (SPA with react-router, Recharts for visualization)
 - **Backend**: Express.js RESTful API
 - **Database**: MongoDB (NoSQL, temporal data warehouse approach)
+- **Big-data layer**: Apache Spark (PySpark) — DataFrame aggregations + Spark MLlib (LinearRegression, GBTRegressor)
+- **Tests**: Jest + `mongodb-memory-server` (unit tests for DAL & ingestion pipeline)
 
 ## Features
 
@@ -34,6 +36,14 @@ Natural language interface powered by **Claude AI** (claude-haiku-4-5) with an a
 
 Falls back to rule-based keyword matching if `ANTHROPIC_API_KEY` is not set.
 
+### UC5: Apache Spark Analytics (M6 / M7)
+Distributed batch processing for instrument-level statistics and ML price prediction. Two PySpark jobs live in `server/src/spark/`:
+
+- **`aggregation_job.py`** — Spark DataFrame API: `groupBy("instrumentId").agg(count, avg, min, max, stddev, …)` plus an annualised volatility column (σ_daily × √252). Writes the per-instrument summary to the `spark_aggregations` collection.
+- **`ml_prediction_job.py`** — Spark MLlib `Pipeline` ( `VectorAssembler → StandardScaler → LinearRegression | GBTRegressor` ). Engineers nine features per row (`lag_1`, `lag_5`, `lag_10`, `ma_5`, `ma_20`, day-of-week, month, high-low range, open-close diff) with `Window` functions, splits 80/20 chronologically, evaluates with `RegressionEvaluator` (RMSE/MAE/R²), and stores results + the first 90 test predictions in `spark_predictions` for charting.
+
+The Python scripts read source data and write results over HTTP via internal Express endpoints, so Python never has to authenticate to MongoDB directly. The React **Spark Analytics** page (`/spark`) renders the aggregation table, the model-metrics table, and an actual-vs-predicted Recharts line chart per symbol/model.
+
 ### Temporal Data Warehouse
 - Records are never updated or deleted in-place
 - Updates create new versioned records
@@ -42,7 +52,7 @@ Falls back to rule-based keyword matching if `ANTHROPIC_API_KEY` is not set.
 
 ## Data Model
 
-Seven collections following the conceptual model:
+Nine collections following the conceptual model:
 
 | Collection | Description |
 |---|---|
@@ -53,11 +63,15 @@ Seven collections following the conceptual model:
 | `portfolio_owners` | Persons or companies owning portfolios |
 | `portfolios` | Named collections of assets |
 | `portfolio_assets` | Links instruments to portfolios |
+| `spark_aggregations` | Output of the PySpark aggregation job (per-instrument statistics + volatility) |
+| `spark_predictions` | Output of the PySpark MLlib job (LR + GBT model metrics + test predictions) |
 
 ## Prerequisites
 
 - Node.js >= 18
-- MongoDB >= 7.0
+- MongoDB >= 7.0  (local or [MongoDB Atlas](https://www.mongodb.com/cloud/atlas))
+- Python >= 3.10  *(only required for the Apache Spark jobs)*
+- Java 17+        *(PySpark runtime; JDK 17 is best, 21/25 work with warnings)*
 
 ## Setup
 
@@ -79,6 +93,30 @@ npm run dev:client
 ```
 
 Open http://localhost:5173 in your browser.
+
+### Running the Spark jobs (optional, for the `/spark` page)
+
+The PySpark jobs talk to MongoDB through Express (port 5000), so the backend must be running.
+
+```bash
+# 1. Install PySpark + helpers (one-time)
+pip install -r server/src/spark/requirements.txt
+
+# 2. (Windows only) tell Spark which Python to use for workers,
+#    otherwise the Microsoft Store python alias breaks worker spawn:
+$env:PYSPARK_PYTHON        = "C:\Path\To\python.exe"
+$env:PYSPARK_DRIVER_PYTHON = "C:\Path\To\python.exe"
+
+# 3. Run from anywhere — paths inside the scripts are resolved automatically
+python server/src/spark/aggregation_job.py
+python server/src/spark/ml_prediction_job.py
+
+# Optional flags
+python server/src/spark/aggregation_job.py --symbol AAPL,MSFT
+python server/src/spark/ml_prediction_job.py --symbol AAPL,BTC --model lr
+```
+
+You can also trigger the jobs from the **Spark Analytics** page via the *Run Aggregation Job* / *Run ML Job* buttons (they POST to `/api/spark/run`).
 
 ## API Reference
 
@@ -131,6 +169,18 @@ Open http://localhost:5173 in your browser.
 | POST | `/api/assistant/call` | Execute a tool |
 | POST | `/api/assistant/chat` | Natural language query |
 
+### Spark
+| Method | Endpoint | Description |
+|---|---|---|
+| GET | `/api/spark/status` | Counts of aggregation / prediction documents |
+| GET | `/api/spark/aggregations` | Per-instrument Spark aggregation results |
+| GET | `/api/spark/predictions` | Spark MLlib model metrics + test predictions |
+| GET | `/api/spark/predictions/:symbol` | Predictions for a specific symbol |
+| POST | `/api/spark/run` | Launch a Spark job in the background (`job`: `aggregation` \| `ml` \| `all`) |
+| GET | `/api/spark/internal/source-data` | *Internal* — feeds raw TS + instruments to the PySpark scripts |
+| POST | `/api/spark/internal/save-aggregations` | *Internal* — receives `aggregation_job.py` output |
+| POST | `/api/spark/internal/save-predictions` | *Internal* — receives `ml_prediction_job.py` output |
+
 ## Sample Data
 
 The seed script populates:
@@ -160,6 +210,24 @@ node src/scripts/fetchRealData.js --from 20220101 --to 20241231
 node src/scripts/fetchRealData.js --dry-run
 ```
 
+## Testing
+
+Backend unit tests use **Jest** + **`mongodb-memory-server`** (no live MongoDB needed — an in-memory instance is spun up per suite).
+
+```bash
+cd server
+npm install          # pulls in jest + mongodb-memory-server (first time)
+npm test
+```
+
+What's covered (`server/src/__tests__/`):
+
+| Suite | Covers |
+|---|---|
+| `timeSeries.dal.test.js` | DAL — save record, `findLatest`, filter by `instrumentId` and date range, Decimal128 → JSON number serialisation |
+| `instrument.dal.test.js` | Instrument CRUD via temporal versioning — `create`, `getById`, `update` (closes old version + opens new), `delete` (writes `isDeleted=true` marker) |
+| `ingestion.test.js` | Ingestion pipeline — correct `instrumentId` / `dataSourceId` storage, **upsert deduplication** (`bulkWrite` on `(instrumentId, dataSourceId, date)`), `adjustedClose` fallback to `close`, 400 on empty / missing records |
+
 ## Environment Variables
 
 | Variable | Default | Description |
@@ -170,3 +238,5 @@ node src/scripts/fetchRealData.js --dry-run
 | `MARKET_DATA_REFRESH_INTERVAL_MINUTES` | `15` | Minutes between scheduled market-data refresh runs; disable by setting to `0` |
 | `MARKET_DATA_REFRESH_LIMIT` | `5` | Max instruments to refresh each scheduled run |
 | `VITE_API_URL` | `http://localhost:5000/api` | Frontend API base URL |
+| `EXPRESS_URL` | `http://localhost:5000` | Base URL the PySpark jobs use to reach Express (override with `--api` flag) |
+| `PYSPARK_PYTHON` / `PYSPARK_DRIVER_PYTHON` | | (Windows) full path to `python.exe` — required so Spark workers don't hit the Microsoft Store python alias |

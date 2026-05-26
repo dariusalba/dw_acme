@@ -60,6 +60,14 @@ export const analyticsApi = {
   }
 };
 
+export const sparkApi = {
+  status:       ()           => api.get('/spark/status'),
+  aggregations: (params)     => api.get('/spark/aggregations', { params }),
+  predictions:  (params)     => api.get('/spark/predictions',  { params }),
+  predictionBySymbol: (sym)  => api.get(`/spark/predictions/${sym}`),
+  run:          (body)       => api.post('/spark/run', body),
+};
+
 export const assistantApi = {
   getTools: () => api.get('/assistant/tools'),
   callTool: (tool, params) => api.post('/assistant/call', { tool, params }),
