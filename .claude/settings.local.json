@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"D:\\\\~~school\\\\master\\\\AN 1 SEM 2\\\\dw\\\\dw_acme\" -Recurse -Filter \"*.js\" -o Name)",
+      "Bash(npm install *)",
+      "PowerShell(Get-Command node, npm -ErrorAction SilentlyContinue)",
+      "PowerShell(Get-ChildItem \"C:\\\\Program Files\\\\\" | Where-Object { $_.Name -match \"node\" })",
+      "PowerShell($nvm = Get-ChildItem \"$env:APPDATA\\\\nvm\" -ErrorAction SilentlyContinue | Select-Object -First 1; $nvm; Get-ChildItem \"C:\\\\nvm\" -ErrorAction SilentlyContinue | Select-Object -First 3)"
+    ]
+  }
+}
