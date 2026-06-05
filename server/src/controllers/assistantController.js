@@ -4,6 +4,15 @@ const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY;
 const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
 const CLAUDE_MODEL = 'claude-haiku-4-5-20251001';
 
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_API_URL = 'https://api.groq.com/openai/v1/chat/completions';
+const GROQ_MODEL   = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+
+const SYSTEM_PROMPT = `You are the Acme Financial Data Warehouse assistant. You help users explore financial data stored in our platform.
+Always use the available tools to fetch real data before answering — never make up prices, statistics, or instrument details.
+Most tools accept either an internal instrument ID or a ticker symbol (e.g. "AAPL", "BTC"), so you can pass the symbol directly without first calling list_assets.
+Be concise and data-driven. Format numbers clearly (e.g. $185.23, 2.3M volume).`;
+
 // Tool definitions (MCP-style, exposed via /assistant/tools)
 const TOOL_DEFINITIONS = [
   {
@@ -77,7 +86,7 @@ const ANTHROPIC_TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        instrumentId: { type: 'string', description: 'Internal instrument ID' },
+        instrumentId: { type: 'string', description: 'Internal instrument ID OR ticker symbol (e.g. "AAPL", "NVDA", "BTC")' },
         dataSourceId: { type: 'string', description: 'Optional: filter by a specific data source ID' },
         startDate: { type: 'string', description: 'Optional: ISO date string start of range' },
         endDate: { type: 'string', description: 'Optional: ISO date string end of range' },
@@ -92,7 +101,7 @@ const ANTHROPIC_TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        instrumentId: { type: 'string', description: 'Internal instrument ID' },
+        instrumentId: { type: 'string', description: 'Internal instrument ID OR ticker symbol (e.g. "AAPL", "NVDA", "BTC")' },
         startDate: { type: 'string', description: 'Optional: start of analysis period' },
         endDate: { type: 'string', description: 'Optional: end of analysis period' }
       },
@@ -105,8 +114,8 @@ const ANTHROPIC_TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        instrumentId1: { type: 'string', description: 'First instrument internal ID' },
-        instrumentId2: { type: 'string', description: 'Second instrument internal ID' }
+        instrumentId1: { type: 'string', description: 'First instrument — internal ID or ticker symbol (e.g. "AAPL")' },
+        instrumentId2: { type: 'string', description: 'Second instrument — internal ID or ticker symbol (e.g. "MSFT")' }
       },
       required: ['instrumentId1', 'instrumentId2']
     }
@@ -117,7 +126,7 @@ const ANTHROPIC_TOOLS = [
     input_schema: {
       type: 'object',
       properties: {
-        instrumentId: { type: 'string', description: 'Internal instrument ID' },
+        instrumentId: { type: 'string', description: 'Internal instrument ID OR ticker symbol (e.g. "AAPL", "NVDA", "BTC")' },
         window: { type: 'number', description: 'Number of recent days to average (default 5)' }
       },
       required: ['instrumentId']
@@ -136,13 +145,38 @@ const ANTHROPIC_TOOLS = [
   }
 ];
 
-//Tool execution (all queries hit the real DB)
-async function executeTool(toolName, params) {
+// OpenAI / Groq tool schema — derived from ANTHROPIC_TOOLS so we only maintain one source of truth
+const OPENAI_TOOLS = ANTHROPIC_TOOLS.map(t => ({
+  type: 'function',
+  function: {
+    name: t.name,
+    description: t.description,
+    parameters: t.input_schema,
+  },
+}));
+
+// Resolve either an internal _id or a ticker symbol to the canonical _id.
+// LLMs frequently pass the symbol ("NVDA") instead of the UUID even when told otherwise,
+// so we accept both transparently.
+async function resolveInstrumentId(idOrSymbol) {
+  if (!idOrSymbol) return null;
+  let inst = await FinancialInstrument.findById(idOrSymbol).select('_id').lean();
+  if (inst) return inst._id;
+  inst = await FinancialInstrument.findOne({ symbol: String(idOrSymbol).toUpperCase() }).select('_id').lean();
+  return inst ? inst._id : null;
+}
+
+//Tool execution (all queries hit the real DB).
+// `forLLM` trims large payloads to reduce token usage when piped into a chat completion.
+async function executeTool(toolName, params, forLLM = false) {
   switch (toolName) {
     case 'list_assets': {
-      return await FinancialInstrument.find()
-        .select('_id symbol instrumentClass name exchange region')
-        .lean();
+      // Direct API consumers get full metadata; LLM agentic loop gets a slim version
+      // (just _id + symbol + instrumentClass) to keep conversation tokens small.
+      const projection = forLLM
+        ? '_id symbol instrumentClass'
+        : '_id symbol instrumentClass name exchange region';
+      return await FinancialInstrument.find().select(projection).lean();
     }
 
     case 'get_asset': {
@@ -164,18 +198,24 @@ async function executeTool(toolName, params) {
     }
 
     case 'list_data_sources': {
-      return await DataSource.find().lean();
+      const projection = forLLM ? '_id vendorName licenseType' : null;
+      const q = DataSource.find();
+      if (projection) q.select(projection);
+      return await q.lean();
     }
 
     case 'fetch_time_series': {
-      const query = { instrumentId: params.instrumentId };
+      const resolvedId = await resolveInstrumentId(params.instrumentId);
+      if (!resolvedId) return { error: `Instrument not found: ${params.instrumentId}` };
+      const query = { instrumentId: resolvedId };
       if (params.dataSourceId) query.dataSourceId = params.dataSourceId;
       if (params.startDate || params.endDate) {
         query.date = {};
         if (params.startDate) query.date.$gte = new Date(params.startDate);
         if (params.endDate) query.date.$lte = new Date(params.endDate);
       }
-      const limit = params.limit || 20;
+      // Default 20 for direct API calls; LLM agentic loop gets 10 to save tokens
+      const limit = params.limit || (forLLM ? 10 : 20);
       const records = await TimeSeriesRecord.find(query).sort({ date: -1 }).limit(limit).lean();
       return records.map(r => ({
         date: r.date,
@@ -188,7 +228,9 @@ async function executeTool(toolName, params) {
     }
 
     case 'summarize_trends': {
-      const match = { instrumentId: params.instrumentId };
+      const resolvedId = await resolveInstrumentId(params.instrumentId);
+      if (!resolvedId) return { error: `Instrument not found: ${params.instrumentId}` };
+      const match = { instrumentId: resolvedId };
       if (params.startDate || params.endDate) {
         match.date = {};
         if (params.startDate) match.date.$gte = new Date(params.startDate);
@@ -215,8 +257,11 @@ async function executeTool(toolName, params) {
     }
 
     case 'compare_assets': {
+      const id1 = await resolveInstrumentId(params.instrumentId1);
+      const id2 = await resolveInstrumentId(params.instrumentId2);
+      if (!id1 || !id2) return { error: `Could not resolve one of: ${params.instrumentId1}, ${params.instrumentId2}` };
       const results = await TimeSeriesRecord.aggregate([
-        { $match: { instrumentId: { $in: [params.instrumentId1, params.instrumentId2] } } },
+        { $match: { instrumentId: { $in: [id1, id2] } } },
         {
           $group: {
             _id: '$instrumentId',
@@ -230,7 +275,7 @@ async function executeTool(toolName, params) {
       ]);
 
       const instruments = await FinancialInstrument.find({
-        _id: { $in: [params.instrumentId1, params.instrumentId2] }
+        _id: { $in: [id1, id2] }
       }).lean();
 
       return instruments.map(inst => ({
@@ -240,8 +285,10 @@ async function executeTool(toolName, params) {
     }
 
     case 'forecast_price': {
+      const resolvedId = await resolveInstrumentId(params.instrumentId);
+      if (!resolvedId) return { error: `Instrument not found: ${params.instrumentId}` };
       const window = params.window || 5;
-      const records = await TimeSeriesRecord.find({ instrumentId: params.instrumentId })
+      const records = await TimeSeriesRecord.find({ instrumentId: resolvedId })
         .sort({ date: -1 })
         .limit(window)
         .lean();
@@ -263,7 +310,9 @@ async function executeTool(toolName, params) {
     }
 
     case 'get_risk_metrics': {
-      const records = await TimeSeriesRecord.find({ instrumentId: params.instrumentId })
+      const resolvedId = await resolveInstrumentId(params.instrumentId);
+      if (!resolvedId) return { error: `Instrument not found: ${params.instrumentId}` };
+      const records = await TimeSeriesRecord.find({ instrumentId: resolvedId })
         .sort({ date: 1 })
         .lean();
 
@@ -290,7 +339,7 @@ async function executeTool(toolName, params) {
       const riskCategory = volatility < 0.15 ? 'Low' : volatility < 0.35 ? 'Medium' : 'High';
 
       return {
-        instrumentId: params.instrumentId,
+        instrumentId: resolvedId,
         dataPoints: records.length,
         annualizedVolatility: Math.round(volatility * 10000) / 100,
         maxDrawdownPct: Math.round(maxDrawdown * 10000) / 100,
@@ -316,10 +365,7 @@ async function callClaudeAPI(messages, tools) {
     body: JSON.stringify({
       model: CLAUDE_MODEL,
       max_tokens: 1024,
-      system: `You are the Acme Financial Data Warehouse assistant. You help users explore financial data stored in our platform.
-Always use the available tools to fetch real data before answering — never make up prices, statistics, or instrument details.
-When a user asks about a symbol like AAPL or BTC, first call list_assets to find its internal ID, then use that ID for further calls.
-Be concise and data-driven. Format numbers clearly (e.g. $185.23, 2.3M volume).`,
+      system: SYSTEM_PROMPT,
       messages,
       tools
     })
@@ -354,7 +400,7 @@ async function runAgenticLoop(userMessage) {
         if (block.type !== 'tool_use') continue;
         let result;
         try {
-          result = await executeTool(block.name, block.input);
+          result = await executeTool(block.name, block.input, true);
         } catch (err) {
           result = { error: err.message };
         }
@@ -369,6 +415,72 @@ async function runAgenticLoop(userMessage) {
     }
 
     break;
+  }
+
+  return 'Maximum reasoning steps reached. Please try a more specific question.';
+}
+
+// ── Groq (OpenAI-compatible) API call ────────────────────────────────────────
+async function callGroqAPI(messages, tools) {
+  const response = await fetch(GROQ_API_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${GROQ_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: GROQ_MODEL,
+      messages,
+      tools,
+      tool_choice: 'auto',
+      max_tokens: 1024,
+    }),
+  });
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Groq API error ${response.status}: ${err}`);
+  }
+  return response.json();
+}
+
+// ── Agentic loop using Groq / OpenAI tool-calling format ──────────────────────
+async function runGroqAgenticLoop(userMessage) {
+  const messages = [
+    { role: 'system', content: SYSTEM_PROMPT },
+    { role: 'user',   content: userMessage  },
+  ];
+  const MAX_ROUNDS = 6;
+
+  for (let round = 0; round < MAX_ROUNDS; round++) {
+    const response = await callGroqAPI(messages, OPENAI_TOOLS);
+    const choice  = response.choices?.[0];
+    if (!choice) return 'No response generated.';
+
+    const msg = choice.message;
+    messages.push(msg);
+
+    if (choice.finish_reason === 'tool_calls' && Array.isArray(msg.tool_calls) && msg.tool_calls.length) {
+      for (const call of msg.tool_calls) {
+        let args = {};
+        try { args = JSON.parse(call.function.arguments || '{}'); } catch { /* ignore */ }
+        let result;
+        try {
+          result = await executeTool(call.function.name, args, true);
+        } catch (err) {
+          result = { error: err.message };
+        }
+        messages.push({
+          role: 'tool',
+          tool_call_id: call.id,
+          content: JSON.stringify(result),
+        });
+      }
+      continue;
+    }
+
+    // finish_reason === 'stop' (or anything else terminal) → return the text answer
+    return msg.content || 'No response generated.';
   }
 
   return 'Maximum reasoning steps reached. Please try a more specific question.';
@@ -395,16 +507,24 @@ async function chat(req, res) {
     const { message } = req.body;
     if (!message) return res.status(400).json({ error: 'message is required' });
 
-    // If no API key, fall back to the rule-based responses
-    if (!ANTHROPIC_API_KEY) {
-      return fallbackChat(req, res, message);
+    // Provider priority: Anthropic → Groq → keyword fallback
+    if (ANTHROPIC_API_KEY) {
+      const answer = await runAgenticLoop(message);
+      return res.json({
+        query: message,
+        provider: 'anthropic',
+        responses: [{ action: 'llm_response', text: answer }],
+      });
     }
-
-    const answer = await runAgenticLoop(message);
-    res.json({
-      query: message,
-      responses: [{ action: 'llm_response', text: answer }]
-    });
+    if (GROQ_API_KEY) {
+      const answer = await runGroqAgenticLoop(message);
+      return res.json({
+        query: message,
+        provider: 'groq',
+        responses: [{ action: 'llm_response', text: answer }],
+      });
+    }
+    return fallbackChat(req, res, message);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

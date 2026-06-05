@@ -60,7 +60,9 @@ Covers DAL (save/find/filter), instrument CRUD via temporal versioning, ingestio
 | Var | Default | Purpose |
 |---|---|---|
 | `MONGODB_URI` | `mongodb://localhost:27017/acme_financial_dwh` | DB connection |
-| `ANTHROPIC_API_KEY` | — | Claude assistant; falls back to keyword mode |
+| `ANTHROPIC_API_KEY` | — | Claude assistant (preferred provider) |
+| `GROQ_API_KEY` | — | Groq Llama assistant — used if Anthropic key is absent |
+| `GROQ_MODEL` | `llama-3.3-70b-versatile` | Override Groq model name |
 | `PORT` | `5000` | Backend |
 | `VITE_API_URL` | `http://localhost:5000/api` | Frontend → backend base URL |
 | `EXPRESS_URL` | `http://localhost:5000` | PySpark → Express base URL |
